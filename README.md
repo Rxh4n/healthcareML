@@ -102,6 +102,34 @@ predict_risk({
 
 ---
 
+## Interactive risk calculator
+
+Enter a person's details and get their estimated 10-year risk plus a breakdown
+of what is driving it. Two interfaces:
+
+**Web app (browser form):**
+```bash
+python -m streamlit run app.py
+```
+A tab opens with sliders/dropdowns for age, ethnicity, deprivation, smoking,
+BMI (from height + weight), diabetes, alcohol, activity and family history. It
+shows the risk %, a LOW/MODERATE/HIGH band, and a "what's driving this" chart.
+(Use `python -m streamlit ...` so it works even if the `streamlit` command
+isn't on your PATH.)
+
+**Terminal (zero install beyond requirements):**
+```bash
+python predict_cli.py
+```
+Answers questions in the command prompt and prints the risk and its drivers.
+Press Enter to accept the `[default]` for any question.
+
+Both use the same interpretable logistic model, so a person scores identically
+in either one. `explain_risk(person)` returns the per-factor multipliers
+programmatically.
+
+---
+
 ## Results (typical run)
 
 **Area model** (~151 local authorities, 5-fold CV): **R² ≈ 0.69**, MAE ≈ 8
@@ -148,8 +176,10 @@ config.py            paths, indicator IDs, published odds ratios
 data_fetch.py        OHID Fingertips API client (real data, cached)
 area_model.py        real-data area-level model
 synthetic_data.py    synthetic individual cohort (real published risks)
-individual_model.py  personal 10-year risk model + predict_risk()
-run_all.py           end-to-end runner
+individual_model.py  personal 10-year risk model + predict_risk()/explain_risk()
+app.py               interactive web calculator (Streamlit)
+predict_cli.py       interactive terminal calculator
+run_all.py           end-to-end runner (trains both models)
 data/  models/  outputs/   created on first run
 ```
 

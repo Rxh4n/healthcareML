@@ -86,17 +86,23 @@ def train() -> dict:
         print(f"  {name:20s}  ROC AUC = {auc:.3f}   Brier = {brier:.4f}")
 
     best_name = max(results, key=lambda k: results[k]["auc"])
-    best = results[best_name]["model"]
-    print(f"  -> selected for predict_risk(): {best_name}")
+    print(f"  best discrimination: {best_name} (AUC {results[best_name]['auc']:.3f})")
 
-    joblib.dump({"model": best, "features": FEATURES}, config.MODELS / "individual_model.joblib")
+    # Serve the LOGISTIC model: performance is tied with gradient boosting, but
+    # it is interpretable and well-calibrated, so the risk calculator can also
+    # explain WHY a person's risk is high or low (see explain_risk()).
+    serving = results["Logistic regression"]["model"]
+    joblib.dump({"model": serving, "features": FEATURES},
+                config.MODELS / "individual_model.joblib")
+    print("  serving model for calculator/app: Logistic regression "
+          "(interpretable + calibrated)")
 
     _plot_roc(yte, results)
     _plot_calibration(yte, results[best_name]["proba"], best_name)
     if tp_te is not None:
         _plot_vs_truth(tp_te.to_numpy(), results[best_name]["proba"], best_name)
     _odds_ratio_table(logistic)
-    _print_personas(best)
+    _print_personas(serving)
     return results
 
 
@@ -174,6 +180,63 @@ def predict_risk(person: dict) -> dict:
     row = pd.DataFrame([{k: person[k] for k in bundle["features"]}])
     p = float(bundle["model"].predict_proba(row)[:, 1][0])
     return {"risk_10yr": round(p, 4), "risk_pct": f"{p:.1%}", "band": _band(p)}
+
+
+# Pretty labels for the "what's driving your risk" breakdown.
+_FRIENDLY = {
+    "diabetes": "Has diabetes",
+    "physically_inactive": "Physically inactive",
+    "family_history": "Family history of cancer",
+}
+_CAT_LABEL = {
+    "sex": "Sex", "ethnicity": "Ethnicity", "smoking": "Smoking",
+    "bmi_cat": "BMI", "alcohol": "Alcohol",
+}
+
+
+def explain_risk(person: dict) -> list[dict]:
+    """Break a person's risk into per-factor multipliers vs a reference person
+    (age 50, female, White, never-smoker, normal BMI, mid deprivation, no other
+    risk factors). Multiplier > 1 raises risk, < 1 lowers it. Consistent with
+    the probability from predict_risk() because both use the same logistic model.
+    """
+    bundle = joblib.load(config.MODELS / "individual_model.joblib")
+    model = bundle["model"]
+    if not (hasattr(model, "named_steps") and "clf" in model.named_steps):
+        return []  # served model is not the interpretable pipeline
+
+    prep, clf = model.named_steps["prep"], model.named_steps["clf"]
+    row = pd.DataFrame([{k: person[k] for k in FEATURES}])
+    x = prep.transform(row)[0]
+    names = list(prep.get_feature_names_out())
+    coefs = clf.coef_[0]
+
+    contribs: dict[str, float] = {}
+    for nm, xi, c in zip(names, x, coefs):
+        key = nm.replace("cat__", "").replace("num__", "")
+        if key == "age":
+            delta = person["age"] - config.AGE_REF
+            if delta:
+                contribs[f"Age {person['age']} (vs {config.AGE_REF})"] = c * delta
+        elif key == "imd_quintile":
+            delta = person["imd_quintile"] - 3
+            if delta:
+                contribs["Area deprivation"] = c * delta
+        elif key in ("diabetes", "physically_inactive", "family_history"):
+            if xi:
+                contribs[_FRIENDLY[key]] = c * xi
+        elif xi:  # active one-hot category (e.g. smoking_current, bmi_cat_obese)
+            for col in CAT:
+                if key.startswith(col + "_"):
+                    contribs[f"{_CAT_LABEL[col]}: {key[len(col) + 1:]}"] = c
+                    break
+
+    out = [
+        {"factor": k, "multiplier": float(np.exp(v)), "log_odds": float(v)}
+        for k, v in contribs.items() if abs(v) > 1e-9
+    ]
+    out.sort(key=lambda d: abs(d["log_odds"]), reverse=True)
+    return out
 
 
 PERSONAS = {
